@@ -132,6 +132,7 @@ export const alertColumns = (
     sortable: true,
     truncateText: false,
     render: (total, alert) => {
+      console.log(JSON.stringify(alert));
       const component = (
         <EuiLink
           key="alerts"
@@ -157,31 +158,37 @@ export const alertColumns = (
       const contextProvider = async () => {
         const monitorId = alert.monitor_id;
         const monitorResp = await httpClient.get(`/api/alerting/monitors/${monitorId}`);
-        const search = monitorResp.resp.inputs[0].search;
-        const indices = search.indices;
-        let query = JSON.stringify(search.query);
-        if (query.indexOf('{{period_end}}') !== -1) {
-          query = query.replaceAll('{{period_end}}', alert.start_time);
+        let alertTriggeredByData = '';
+        if (monitorResp.resp.monitor_type === 'query_level_monitor') {
+          const search = monitorResp.resp.inputs[0].search;
+          const indices = search.indices;
+          let query = JSON.stringify(search.query);
+          if (query.indexOf('{{period_end}}') !== -1) {
+            query = query.replaceAll('{{period_end}}', alert.start_time);
+          }
+          const alertData = await httpClient.post(`/api/console/proxy`, {
+            query: {
+              path: `${indices}/_search`,
+              method: 'GET',
+              dataSourceId: '',
+            },
+            body: query,
+            prependBasePath: true,
+            asResponse: true,
+            withLongNumeralsSupport: true,
+          });
+
+          alertTriggeredByData = JSON.stringify(alertData.body);
         }
-        const alertData = await httpClient.post(`/api/console/proxy`, {
-          query: {
-            path: `${indices}/_search`,
-            method: 'GET',
-            dataSourceId: '',
-          },
-          body: query,
-          prependBasePath: true,
-          asResponse: true,
-          withLongNumeralsSupport: true,
-        });
 
         const monitorDefinition = monitorResp.resp;
         delete monitorDefinition.ui_metadata;
         delete monitorDefinition.data_sources;
-        const alertTriggeredByData = JSON.stringify(alertData.body);
         return `Monitor definition: ${JSON.stringify(monitorDefinition)}\n, Trigger Name: ${
           alert.trigger_name
-        }\n, Data triggers the alert: ${alertTriggeredByData}\n`;
+        }\n,Active Alert: ${JSON.stringify(
+          alert
+        )}\n, Data triggers the alert: ${alertTriggeredByData}\n`;
       };
 
       return getAssistantDashboards().chatEnabled()
