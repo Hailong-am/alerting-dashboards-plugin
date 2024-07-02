@@ -7,9 +7,10 @@ import React from 'react';
 import _ from 'lodash';
 import { EuiLink, EuiToolTip } from '@elastic/eui';
 import moment from 'moment';
-import { ALERT_STATE, DEFAULT_EMPTY_DATA } from '../../../utils/constants';
+import { ALERT_STATE, DEFAULT_EMPTY_DATA, MONITOR_TYPE } from '../../../utils/constants';
 import { PLUGIN_NAME } from '../../../../utils/constants';
 import { getAssistantDashboards } from '../../../services';
+import { getDataSourceQueryObj } from '../../../pages/utils/helpers';
 
 export const renderTime = (time) => {
   const momentTime = moment(time);
@@ -132,7 +133,6 @@ export const alertColumns = (
     sortable: true,
     truncateText: false,
     render: (total, alert) => {
-      console.log(JSON.stringify(alert));
       const component = (
         <EuiLink
           key="alerts"
@@ -156,21 +156,48 @@ export const alertColumns = (
         </EuiLink>
       );
       const contextProvider = async () => {
-        const monitorId = alert.monitor_id;
-        const monitorResp = await httpClient.get(`/api/alerting/monitors/${monitorId}`);
+        // 1. get monitor definition
+        const dataSourceQuery = getDataSourceQueryObj();
+        const monitorResp = await httpClient.get(
+          `../api/alerting/monitors/${alert.monitor_id}`,
+          dataSourceQuery
+        );
+        const monitorDefinition = monitorResp.resp;
+        delete monitorDefinition.ui_metadata;
+        delete monitorDefinition.data_sources;
+
+        let monitorDefinitionStr = JSON.stringify(monitorDefinition);
+
+        // 2. get data triggers the alert
         let alertTriggeredByData = '';
-        if (monitorResp.resp.monitor_type === 'query_level_monitor') {
+        let dsl = '';
+        if (
+          monitorResp.resp.monitor_type === MONITOR_TYPE.QUERY_LEVEL ||
+          monitorResp.resp.monitor_type === MONITOR_TYPE.BUCKET_LEVEL
+        ) {
           const search = monitorResp.resp.inputs[0].search;
           const indices = search.indices;
           let query = JSON.stringify(search.query);
+          // Only keep the query part
+          dsl = JSON.stringify({ query: search.query.query });
           if (query.indexOf('{{period_end}}') !== -1) {
             query = query.replaceAll('{{period_end}}', alert.start_time);
+            const alertStartTime = moment.utc(alert.start_time).format('YYYY-MM-DD HH:mm:ss');
+            dsl = dsl.replaceAll('{{period_end}}', alertStartTime);
+            // as we changed the format, remove it
+            dsl = dsl.replaceAll('"format":"epoch_millis",', '');
+            monitorDefinitionStr = monitorDefinitionStr.replaceAll(
+              '{{period_end}}',
+              alertStartTime
+            );
+            // as we changed the format, remove it
+            monitorDefinitionStr = monitorDefinitionStr.replaceAll('"format":"epoch_millis",', '');
           }
           const alertData = await httpClient.post(`/api/console/proxy`, {
             query: {
               path: `${indices}/_search`,
               method: 'GET',
-              dataSourceId: '',
+              dataSourceId: dataSourceQuery ? dataSourceQuery.query.dataSourceId : '',
             },
             body: query,
             prependBasePath: true,
@@ -181,14 +208,13 @@ export const alertColumns = (
           alertTriggeredByData = JSON.stringify(alertData.body);
         }
 
-        const monitorDefinition = monitorResp.resp;
-        delete monitorDefinition.ui_metadata;
-        delete monitorDefinition.data_sources;
-        return `Monitor definition: ${JSON.stringify(monitorDefinition)}\n, Trigger Name: ${
-          alert.trigger_name
-        }\n,Active Alert: ${JSON.stringify(
-          alert
-        )}\n, Data triggers the alert: ${alertTriggeredByData}\n`;
+        // 3. build the context
+        return `
+        Here is the detail information about alert ${alert.name}
+        ### Monitor definition\n ${monitorDefinitionStr}\n 
+        ### Active Alert\n ${JSON.stringify(alert)}\n 
+        ### Data triggers this alert\n ${alertTriggeredByData}\n 
+        ### Alert query DSL ${dsl} \n`;
       };
 
       return getAssistantDashboards().chatEnabled()
